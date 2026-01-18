@@ -10,12 +10,18 @@ use faer_sparse::qr::{factorize_symbolic_qr, QrSymbolicParams, SymbolicQr};
 use crate::pattern::{AugmentedPattern, JacobianPattern, PatternError};
 use crate::report::{emit_line, IterationReport, Reporter, SolveStatus, SolverStats, StdoutReporter};
 
+/// Errors while constructing or running the solver.
 #[derive(Debug)]
 pub enum SolverError {
+    /// The sparsity pattern is invalid.
     Pattern(PatternError),
+    /// The pattern has zero rows or columns.
     InvalidDimensions { nrows: usize, ncols: usize },
+    /// faer reported an error during factorization or solve.
     Faer(faer_sparse::FaerError),
+    /// Workspace requirement overflowed.
     WorkspaceOverflow,
+    /// Workspace allocation failed.
     WorkspaceAlloc,
 }
 
@@ -35,8 +41,10 @@ impl fmt::Display for SolverError {
 
 impl std::error::Error for SolverError {}
 
+/// Errors specific to a solve call.
 #[derive(Debug)]
 pub enum SolveError {
+    /// The provided x has the wrong length.
     DimensionMismatch { expected: usize, actual: usize },
 }
 
@@ -52,15 +60,24 @@ impl fmt::Display for SolveError {
 
 impl std::error::Error for SolveError {}
 
+/// Options controlling the Levenberg-Marquardt solve.
 #[derive(Debug, Clone)]
 pub struct SolverOptions {
+    /// Maximum number of iterations.
     pub max_iters: usize,
+    /// Converge when ||J^T r||_inf <= grad_tol.
     pub grad_tol: f64,
+    /// Converge when ||p||_2 <= step_tol * (||x||_2 + step_tol).
     pub step_tol: f64,
+    /// Converge when 0.5 * ||r||^2 <= cost_tol.
     pub cost_tol: f64,
+    /// Initial damping parameter.
     pub lambda_init: f64,
+    /// Minimum damping parameter.
     pub lambda_min: f64,
+    /// Maximum damping parameter.
     pub lambda_max: f64,
+    /// Emit per-iteration diagnostics to stdout by default.
     pub verbose: bool,
 }
 
@@ -79,10 +96,14 @@ impl Default for SolverOptions {
     }
 }
 
+/// Nonlinear least squares problem with residuals r(x) and Jacobian J(x).
 pub trait Problem {
+    /// Fill residuals r(x).
     fn residuals(&mut self, x: &[f64], residuals: &mut [f64]);
+    /// Fill Jacobian values in column order for the given sparsity pattern.
     fn jacobian(&mut self, x: &[f64], jacobian: &mut JacobianValuesMut<'_>);
 
+    /// Optional combined evaluation; default calls residuals then jacobian.
     fn residuals_and_jacobian(
         &mut self,
         x: &[f64],
@@ -94,6 +115,7 @@ pub trait Problem {
     }
 }
 
+/// Mutable view of Jacobian values matching the sparsity pattern.
 pub struct JacobianValuesMut<'a> {
     values: &'a mut [f64],
     col_ptrs: &'a [usize],
@@ -113,20 +135,24 @@ impl<'a> JacobianValuesMut<'a> {
         }
     }
 
+    /// Number of residuals (rows in J).
     pub fn nrows(&self) -> usize {
         self.nrows
     }
 
+    /// Number of parameters (columns in J).
     pub fn ncols(&self) -> usize {
         self.diag_positions.len()
     }
 
+    /// Sorted row indices for the given column.
     pub fn row_indices_of_col(&self, col: usize) -> &[usize] {
         let start = self.col_ptrs[col];
         let end = self.diag_positions[col];
         &self.row_indices[start..end]
     }
 
+    /// Mutable values for the given column, aligned with row_indices_of_col.
     pub fn values_of_col_mut(&mut self, col: usize) -> &mut [f64] {
         let start = self.col_ptrs[col];
         let end = self.diag_positions[col];
@@ -134,6 +160,7 @@ impl<'a> JacobianValuesMut<'a> {
     }
 }
 
+/// Sparse Levenberg-Marquardt solver for min 0.5 * ||r(x)||^2.
 pub struct LmSolver {
     pattern: JacobianPattern,
     augmented: AugmentedPattern,
@@ -175,6 +202,7 @@ impl<'a> ReporterSlot<'a> {
 }
 
 impl LmSolver {
+    /// Create a solver for the given sparsity pattern and parallelism mode.
     pub fn new(
         pattern: JacobianPattern,
         parallelism: Parallelism,
@@ -227,10 +255,14 @@ impl LmSolver {
         })
     }
 
+    /// Return the sparsity pattern used by this solver.
     pub fn jacobian_pattern(&self) -> &JacobianPattern {
         &self.pattern
     }
 
+    /// Solve for x in-place using Levenberg-Marquardt.
+    ///
+    /// Minimizes 0.5 * ||r(x)||^2 and returns summary statistics.
     pub fn solve(
         &mut self,
         problem: &mut impl Problem,
@@ -251,11 +283,13 @@ impl LmSolver {
         let m = self.pattern.nrows();
         let mut lambda = clamp_lambda(options.lambda_init, options);
 
+        // Evaluate r(x) and J(x) at the current iterate.
         {
             let mut jac = JacobianValuesMut::new(&mut self.values, &self.augmented);
             problem.residuals_and_jacobian(x, &mut self.residuals, &mut jac);
         }
 
+        // Cost is 0.5 * ||r||^2.
         let mut cost = 0.5 * dot(&self.residuals, &self.residuals);
         if !cost.is_finite() {
             let stats = SolverStats {
@@ -273,6 +307,7 @@ impl LmSolver {
         let mut last_grad_inf = 0.0;
 
         for iter in 0..options.max_iters {
+            // Gradient g = J^T r; check convergence.
             compute_gradient(
                 &mut self.gradient,
                 &self.augmented,
@@ -304,6 +339,7 @@ impl LmSolver {
                 return Ok(finish_stats(stats, x, start_time, &mut reporter));
             }
 
+            // Solve LM system via augmented QR: [J; sqrt(lambda) I] p = [-r; 0].
             let diag = lambda.sqrt();
             for &pos in self.augmented.diag_positions() {
                 self.values[pos] = diag;
@@ -338,6 +374,7 @@ impl LmSolver {
                 stack.rb_mut(),
             );
 
+            // Step p is the first n entries of the solved system.
             let step = &self.rhs[..n];
             let step_norm = l2_norm(step);
             last_step_norm = step_norm;
@@ -354,6 +391,7 @@ impl LmSolver {
                 return Ok(finish_stats(stats, x, start_time, &mut reporter));
             }
 
+            // Predicted vs actual decrease gives rho for acceptance.
             let predicted = -0.5 * dot(step, &self.gradient);
             let mut trial_cost = cost;
             let mut rho = 0.0;
@@ -386,6 +424,7 @@ impl LmSolver {
                 });
             }
 
+            // Accept step and refresh J, or increase damping.
             if accepted {
                 x.copy_from_slice(&self.x_trial);
                 self.residuals.copy_from_slice(&self.trial_residuals);

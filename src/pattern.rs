@@ -3,6 +3,9 @@ use core::ops::Range;
 
 use faer_core::sparse::SymbolicSparseColMatRef;
 
+/// Column-compressed sparsity pattern for a Jacobian J(x).
+///
+/// Indices are zero-based; each column's row indices must be sorted.
 #[derive(Debug, Clone)]
 pub struct JacobianPattern {
     nrows: usize,
@@ -11,13 +14,20 @@ pub struct JacobianPattern {
     row_indices: Vec<usize>,
 }
 
+/// Validation errors for a JacobianPattern.
 #[derive(Debug, Clone)]
 pub enum PatternError {
+    /// col_ptrs length is not ncols + 1.
     ColPtrLen { expected: usize, actual: usize },
+    /// col_ptrs[0] is not 0.
     ColPtrStart { value: usize },
+    /// col_ptrs is not non-decreasing.
     ColPtrNotMonotonic { col: usize, prev: usize, next: usize },
+    /// col_ptrs[ncols] does not match row_indices length.
     ColPtrOutOfBounds { last: usize, row_indices_len: usize },
+    /// A row index is >= nrows.
     RowIndexOutOfBounds { col: usize, row: usize, nrows: usize },
+    /// Row indices in a column are not sorted.
     RowIndexNotSorted { col: usize, prev: usize, next: usize },
 }
 
@@ -138,35 +148,41 @@ impl JacobianPattern {
         })
     }
 
+    /// Number of residuals (rows in J).
     pub fn nrows(&self) -> usize {
         self.nrows
     }
 
+    /// Number of parameters (columns in J).
     pub fn ncols(&self) -> usize {
         self.ncols
     }
 
+    /// Number of non-zeros in J.
     pub fn nnz(&self) -> usize {
         self.row_indices.len()
     }
 
+    /// Column pointer array in CSC format.
     pub fn col_ptrs(&self) -> &[usize] {
         &self.col_ptrs
     }
 
+    /// Row index array in CSC format.
     pub fn row_indices(&self) -> &[usize] {
         &self.row_indices
     }
 
+    /// Index range in row_indices for the given column.
     pub fn col_range(&self, col: usize) -> Range<usize> {
         self.col_ptrs[col]..self.col_ptrs[col + 1]
     }
 
+    /// Sorted row indices for the given column.
     pub fn row_indices_of_col(&self, col: usize) -> &[usize] {
         let range = self.col_range(col);
         &self.row_indices[range]
     }
-
 }
 
 #[derive(Debug)]

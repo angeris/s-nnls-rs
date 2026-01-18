@@ -1,33 +1,55 @@
-use comfy_table::{Cell, CellAlignment, ContentArrangement, Table, presets};
+use comfy_table::{presets, Cell, CellAlignment, ContentArrangement, Table};
 
+/// Solver termination status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SolveStatus {
+    /// Infinity norm of the gradient is below tolerance.
     ConvergedGradient,
+    /// Step norm is below tolerance.
     ConvergedStep,
+    /// Cost is below tolerance.
     ConvergedCost,
+    /// Reached the iteration limit without converging.
     MaxIterations,
+    /// NaN or Inf encountered in the objective.
     NumericalFailure,
 }
 
+/// Summary statistics from a solve.
 #[derive(Debug, Clone)]
 pub struct SolverStats {
+    /// Termination status.
     pub status: SolveStatus,
+    /// Number of completed iterations.
     pub iterations: usize,
+    /// Final cost, 0.5 * ||r(x)||^2.
     pub cost: f64,
+    /// Infinity norm of the gradient, ||J^T r||_inf.
     pub grad_inf: f64,
+    /// Step norm, ||p||_2.
     pub step_norm: f64,
+    /// Final damping parameter.
     pub lambda: f64,
 }
 
+/// Per-iteration diagnostics.
 #[derive(Debug, Clone)]
 pub struct IterationReport {
+    /// Iteration index, starting at 0.
     pub iteration: usize,
+    /// Current cost, 0.5 * ||r(x)||^2.
     pub cost: f64,
+    /// Trial cost after the candidate step.
     pub trial_cost: f64,
+    /// Ratio of actual to predicted decrease.
     pub rho: f64,
+    /// Current damping parameter.
     pub lambda: f64,
+    /// Step norm, ||p||_2.
     pub step_norm: f64,
+    /// Infinity norm of the gradient.
     pub grad_inf: f64,
+    /// Whether the trial step was accepted.
     pub accepted: bool,
 }
 
@@ -39,16 +61,21 @@ pub(crate) fn emit_line(line: &str) {
     }
 }
 
+/// Receives iteration updates from the solver.
 pub trait Reporter {
+    /// Called after each trial step is evaluated.
     fn on_iteration(&mut self, report: &IterationReport);
+    /// Called once after the solver exits.
     fn on_finish(&mut self) {}
 }
 
+/// Reporter that prints a UTF-8 table to stdout or the log.
 pub struct StdoutReporter {
     rows: Vec<IterationReport>,
 }
 
 impl StdoutReporter {
+    /// Create a new stdout reporter.
     pub fn new() -> Self {
         Self { rows: Vec::new() }
     }
