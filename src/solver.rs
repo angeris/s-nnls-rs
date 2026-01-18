@@ -161,6 +161,9 @@ impl<'a> JacobianValuesMut<'a> {
 }
 
 /// Sparse Levenberg-Marquardt solver for min 0.5 * ||r(x)||^2.
+///
+/// The Jacobian sparsity pattern is fixed at construction and must match the
+/// values provided by `Problem::jacobian`.
 pub struct LmSolver {
     pattern: JacobianPattern,
     augmented: AugmentedPattern,
