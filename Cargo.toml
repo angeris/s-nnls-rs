@@ -1,0 +1,18 @@
+[package]
+name = "s-nnls-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+comfy-table = "7"
+dyn-stack = "0.10"
+faer-core = "0.17.1"
+faer-sparse = "0.17.1"
+log = "0.4"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "solver"
+harness = false
