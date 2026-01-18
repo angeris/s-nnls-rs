@@ -151,6 +151,150 @@ where
     (x, stats.status)
 }
 
+struct Lcg {
+    state: u64,
+}
+
+impl Lcg {
+    fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    fn next_u32(&mut self) -> u32 {
+        self.state = self
+            .state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1);
+        (self.state >> 32) as u32
+    }
+
+    fn next_usize(&mut self, max: usize) -> usize {
+        (self.next_u32() as usize) % max
+    }
+
+    fn next_f64(&mut self) -> f64 {
+        (self.next_u32() as f64) / (u32::MAX as f64)
+    }
+}
+
+fn dense_pattern_entries_1b(nrows: usize, ncols: usize) -> Vec<(usize, usize)> {
+    let mut entries = Vec::with_capacity(nrows * ncols);
+    for col in 1..=ncols {
+        for row in 1..=nrows {
+            entries.push((row, col));
+        }
+    }
+    entries
+}
+
+fn chain_pattern_entries_1b(n: usize) -> Vec<(usize, usize)> {
+    let mut entries = Vec::with_capacity(3 * n);
+    for col in 1..=n {
+        entries.push((col, col));
+        if col > 1 {
+            entries.push((n + col - 1, col));
+        }
+        if col < n {
+            entries.push((n + col, col));
+        }
+    }
+    entries
+}
+
+struct SparseLinearProblem {
+    col_rows: Vec<Vec<usize>>,
+    col_vals: Vec<Vec<f64>>,
+    b: Vec<f64>,
+}
+
+impl Problem for SparseLinearProblem {
+    fn residuals(&mut self, x: &[f64], residuals: &mut [f64]) {
+        residuals.copy_from_slice(&self.b);
+        for v in residuals.iter_mut() {
+            *v = -*v;
+        }
+        for (col, rows) in self.col_rows.iter().enumerate() {
+            let xj = x[col];
+            let vals = &self.col_vals[col];
+            for (idx, &row) in rows.iter().enumerate() {
+                residuals[row] += vals[idx] * xj;
+            }
+        }
+    }
+
+    fn jacobian(&mut self, _x: &[f64], jacobian: &mut JacobianValuesMut<'_>) {
+        for col in 0..jacobian.ncols() {
+            jacobian
+                .values_of_col_mut(col)
+                .copy_from_slice(&self.col_vals[col]);
+        }
+    }
+}
+
+fn make_sparse_linear_problem(
+    ncols: usize,
+    extra_rows: usize,
+    nnz_per_col: usize,
+    seed: u64,
+) -> (JacobianPattern, SparseLinearProblem, Vec<f64>) {
+    let nrows = ncols + extra_rows;
+    assert!(nnz_per_col > 0);
+    assert!(nnz_per_col <= nrows);
+    let mut rng = Lcg::new(seed);
+
+    let mut col_rows = Vec::with_capacity(ncols);
+    let mut col_vals = Vec::with_capacity(ncols);
+    for col in 0..ncols {
+        let mut rows = Vec::with_capacity(nnz_per_col);
+        rows.push(col);
+        while rows.len() < nnz_per_col {
+            let row = rng.next_usize(nrows);
+            if !rows.contains(&row) {
+                rows.push(row);
+            }
+        }
+        rows.sort_unstable();
+        let mut vals = Vec::with_capacity(rows.len());
+        for _ in 0..rows.len() {
+            let mut v = rng.next_f64() * 2.0 - 1.0;
+            if v == 0.0 {
+                v = 0.1;
+            }
+            vals.push(v);
+        }
+        col_rows.push(rows);
+        col_vals.push(vals);
+    }
+
+    let mut x_star = Vec::with_capacity(ncols);
+    for _ in 0..ncols {
+        x_star.push(rng.next_f64() * 2.0 - 1.0);
+    }
+
+    let mut b = vec![0.0; nrows];
+    for col in 0..ncols {
+        let xj = x_star[col];
+        for (idx, &row) in col_rows[col].iter().enumerate() {
+            b[row] += col_vals[col][idx] * xj;
+        }
+    }
+
+    let mut entries = Vec::new();
+    for col in 0..ncols {
+        for &row in &col_rows[col] {
+            entries.push((row + 1, col + 1));
+        }
+    }
+    let pattern = pattern_from_triplets_1b(nrows, ncols, &entries);
+    let problem = SparseLinearProblem {
+        col_rows,
+        col_vals,
+        b,
+    };
+    (pattern, problem, x_star)
+}
+
+// Solves 1D linear and cubic residuals to verify basic convergence.
 #[test]
 fn basic_nonlinear_solves() {
     let pattern = pattern_from_triplets_1b(1, 1, &[(1, 1)]);
@@ -185,6 +329,7 @@ fn basic_nonlinear_solves() {
     assert!((x[0] - 1.0).abs() <= 1e-6);
 }
 
+// Solves a coupled quadratic system with a sparse Jacobian.
 #[test]
 fn multidimensional_quadratics() {
     let pattern = pattern_from_triplets_1b(3, 2, &[(1, 1), (3, 1), (2, 2), (3, 2)]);
@@ -213,6 +358,7 @@ fn multidimensional_quadratics() {
     assert!((x[1] - 2.0).abs() <= 1e-6);
 }
 
+// Solves the classic Rosenbrock residual formulation.
 #[test]
 fn rosenbrock_residuals() {
     let pattern = pattern_from_triplets_1b(2, 2, &[(1, 1), (2, 1), (2, 2)]);
@@ -238,6 +384,7 @@ fn rosenbrock_residuals() {
     assert!((x[1] - 1.0).abs() <= 1e-5);
 }
 
+// Solves a CAD-style axis-distance constraint set.
 #[test]
 fn cad_axis_distance() {
     let pattern = pattern_from_triplets_1b(
@@ -281,6 +428,7 @@ fn cad_axis_distance() {
     assert!(x[3].abs() <= 1e-5);
 }
 
+// Solves CAD constraints that enforce parallel lines.
 #[test]
 fn cad_parallel_lines() {
     let pattern = pattern_from_triplets_1b(
@@ -373,6 +521,7 @@ fn cad_parallel_lines() {
     assert!((x[7] - 1.0).abs() <= 1e-5);
 }
 
+// Solves CAD constraints that enforce perpendicular lines.
 #[test]
 fn cad_perpendicular_lines() {
     let pattern = pattern_from_triplets_1b(
@@ -453,6 +602,7 @@ fn cad_perpendicular_lines() {
     assert!((x[7] - 2.0).abs() <= 1e-5);
 }
 
+// Solves CAD constraints for a tangent circle.
 #[test]
 fn cad_tangent_circle() {
     let pattern = pattern_from_triplets_1b(
@@ -529,6 +679,7 @@ fn cad_tangent_circle() {
     assert!((x[6] - 1.0).abs() <= 1e-5);
 }
 
+// Solves a larger CAD-style constraint bundle.
 #[test]
 fn cad_complex_constraints() {
     let pattern = pattern_from_triplets_1b(
@@ -684,6 +835,120 @@ fn cad_complex_constraints() {
     assert!((x[14] - 1.0).abs() <= 1e-5);
 }
 
+// Fits a circle to generated points with a dense Jacobian.
+#[test]
+fn circle_fit_generated_points() {
+    let center = (1.5, -0.5);
+    let radius = 2.0;
+    let points = 12;
+    let mut samples = Vec::with_capacity(points);
+    for i in 0..points {
+        let theta = (i as f64) * (2.0 * std::f64::consts::PI / points as f64);
+        samples.push((
+            center.0 + radius * theta.cos(),
+            center.1 + radius * theta.sin(),
+        ));
+    }
+
+    let entries = dense_pattern_entries_1b(points, 3);
+    let pattern = pattern_from_triplets_1b(points, 3, &entries);
+    let (x, status) = solve_problem(
+        pattern,
+        vec![0.0, 0.0, 1.0],
+        |x, out| {
+            for (i, (px, py)) in samples.iter().enumerate() {
+                let dx = px - x[0];
+                let dy = py - x[1];
+                out[i] = dx * dx + dy * dy - x[2] * x[2];
+            }
+        },
+        |x, jac| {
+            for col in 0..jac.ncols() {
+                let rows = jac.row_indices_of_col(col).to_vec();
+                let vals = jac.values_of_col_mut(col);
+                for (idx, &row) in rows.iter().enumerate() {
+                    let (px, py) = samples[row];
+                    let val = match col {
+                        0 => -2.0 * (px - x[0]),
+                        1 => -2.0 * (py - x[1]),
+                        _ => -2.0 * x[2],
+                    };
+                    vals[idx] = val;
+                }
+            }
+        },
+    );
+    assert_converged(status);
+    assert!((x[0] - center.0).abs() <= 1e-5);
+    assert!((x[1] - center.1).abs() <= 1e-5);
+    assert!((x[2] - radius).abs() <= 1e-5);
+}
+
+// Solves a banded linear chain with anchor and difference constraints.
+#[test]
+fn chain_constraints_linear() {
+    let n = 20;
+    let m = 2 * n - 1;
+    let mut target = vec![0.0; n];
+    for i in 0..n {
+        target[i] = (i as f64 * 0.1).sin();
+    }
+    let entries = chain_pattern_entries_1b(n);
+    let pattern = pattern_from_triplets_1b(m, n, &entries);
+    let (x, status) = solve_problem(
+        pattern,
+        vec![0.0; n],
+        |x, out| {
+            for i in 0..n {
+                out[i] = x[i] - target[i];
+            }
+            for i in 0..n - 1 {
+                out[n + i] = (x[i + 1] - x[i]) - (target[i + 1] - target[i]);
+            }
+        },
+        |_x, jac| {
+            for col in 0..jac.ncols() {
+                let rows = jac.row_indices_of_col(col).to_vec();
+                let vals = jac.values_of_col_mut(col);
+                for (idx, &row) in rows.iter().enumerate() {
+                    let coeff = if row == col {
+                        1.0
+                    } else if row == n + col {
+                        -1.0
+                    } else if row + 1 == n + col {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    vals[idx] = coeff;
+                }
+            }
+        },
+    );
+    assert_converged(status);
+    for i in 0..n {
+        assert!((x[i] - target[i]).abs() <= 1e-5);
+    }
+}
+
+// Recovers a deterministic sparse linear system from synthetic data.
+#[test]
+fn sparse_linear_system_recovery() {
+    let (pattern, mut problem, x_star) = make_sparse_linear_problem(12, 5, 4, 0x5eed_u64);
+    let mut solver = LmSolver::new(pattern, Parallelism::None).unwrap();
+    let mut x = vec![0.0; x_star.len()];
+    let stats = solver
+        .solve(&mut problem, &mut x, &solver_options(), None)
+        .unwrap();
+    assert_converged(stats.status);
+    let mut max_err = 0.0_f64;
+    for (xi, xref) in x.iter().zip(&x_star) {
+        max_err = max_err.max((xi - xref).abs());
+    }
+    assert!(max_err <= 1e-5, "max error too high: {max_err}");
+}
+
+// Checks that a second solve stays within a small allocation budget.
 #[test]
 fn allocations() {
     let pattern = pattern_from_triplets_1b(1, 1, &[(1, 1)]);
