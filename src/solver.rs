@@ -380,6 +380,7 @@ impl LmSolver {
             // Step p is the first n entries of the solved system.
             let step = &self.rhs[..n];
             let step_norm = l2_norm(step);
+            let step_norm_sq = step_norm * step_norm;
             last_step_norm = step_norm;
             let x_norm = l2_norm(x);
             if step_norm <= options.step_tol * (x_norm + options.step_tol) {
@@ -395,7 +396,10 @@ impl LmSolver {
             }
 
             // Predicted vs actual decrease gives rho for acceptance.
-            let predicted = -0.5 * dot(step, &self.gradient);
+            let step_dot_grad = dot(step, &self.gradient);
+            // Predicted reduction in 0.5 * ||r||^2 from the linearized model.
+            // For LM steps, predicted = 0.5 * (lambda * ||p||^2 - p^T g).
+            let predicted = 0.5 * (lambda * step_norm_sq - step_dot_grad);
             let mut trial_cost = cost;
             let mut rho = 0.0;
             let mut accepted = false;

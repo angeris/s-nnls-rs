@@ -329,6 +329,29 @@ fn basic_nonlinear_solves() {
     assert!((x[0] - 1.0).abs() <= 1e-6);
 }
 
+// Solves a least squares problem with non-zero residual at the optimum.
+#[test]
+fn nonzero_residual_optimum() {
+    let pattern = pattern_from_triplets_1b(2, 1, &[(1, 1), (2, 1)]);
+    let (x, status) = solve_problem(
+        pattern,
+        vec![2.5],
+        |x, out| {
+            out[0] = x[0] - 1.0;
+            out[1] = x[0] + 1.0;
+        },
+        |_x, jac| {
+            zero_jacobian(jac);
+            set_entry_1b(jac, 1, 1, 1.0);
+            set_entry_1b(jac, 2, 1, 1.0);
+        },
+    );
+    assert_converged(status);
+    assert!(x[0].abs() <= 1e-6);
+    let cost = 0.5 * ((x[0] - 1.0).powi(2) + (x[0] + 1.0).powi(2));
+    assert!((cost - 1.0).abs() <= 1e-6);
+}
+
 // Solves a coupled quadratic system with a sparse Jacobian.
 #[test]
 fn multidimensional_quadratics() {
